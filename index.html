@@ -202,14 +202,17 @@ function load(){
       .getData();
   } else {
     if(!GS_URL){render();return;}
-    fetch(GS_URL+'?nocache='+Date.now())
-      .then(r=>r.json())
-      .then(d=>{
-        ['residents','evals','procs','guardias','casos','rots','stats','ciencia','licencias','comunidad'].forEach(k=>{if(Array.isArray(d[k]))S[k]=d[k];});
-        S.rid=S.residents[0]?.id||null;
-        setSt('ok');render();
-      })
-      .catch(e=>{console.error('Load error:',e);setSt('error');render();});
+    // JSONP: carga datos como script para evitar bloqueo CORS
+    const cbName='_gs'+Date.now();
+    const sc=document.createElement('script');
+    window[cbName]=function(d){
+      try{['residents','evals','procs','guardias','casos','rots','stats','ciencia','licencias','comunidad'].forEach(k=>{if(Array.isArray(d[k]))S[k]=d[k];});S.rid=S.residents[0]?.id||null;}catch(e){console.error(e);}
+      delete window[cbName];if(sc.parentNode)sc.parentNode.removeChild(sc);
+      setSt('ok');render();
+    };
+    sc.onerror=()=>{delete window[cbName];if(sc.parentNode)sc.parentNode.removeChild(sc);setSt('error');render();};
+    sc.src=GS_URL+'?cb='+cbName+'&t='+Date.now();
+    document.head.appendChild(sc);
   }
 }
 function setSt(s){
