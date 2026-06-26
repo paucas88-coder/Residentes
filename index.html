@@ -145,7 +145,11 @@ function fpd(arr,df){
   return arr.filter(x=>{
     if(!x[df])return false;
     const[ay,am]=String(x[df]).split('-');
-    if(repMode==='anual')return ay===y;
+    if(repMode==='anual'){
+      // Año académico: junio Y a mayo Y+1
+      const mo=parseInt(am);
+      return(ay===y&&mo>=6)||(ay===String(parseInt(y)+1)&&mo<=5);
+    }
     const m=parseInt(am);
     return ay===y&&(repSem===1?m<=6:m>6);
   });
@@ -206,13 +210,21 @@ function load(){
     const cbName='_gs'+Date.now();
     const sc=document.createElement('script');
     window[cbName]=function(d){
-      try{['residents','evals','procs','guardias','casos','rots','stats','ciencia','licencias','comunidad'].forEach(k=>{if(Array.isArray(d[k]))S[k]=d[k];});S.rid=S.residents[0]?.id||null;}catch(e){console.error(e);}
+      try{
+        // Deduplicar por ID para evitar duplicados del redirect de Apps Script
+        ['residents','evals','procs','guardias','casos','rots','stats','ciencia','licencias','comunidad'].forEach(k=>{
+          if(Array.isArray(d[k]))S[k]=[...new Map(d[k].map(x=>[x.id,x])).values()];
+        });
+        S.rid=S.residents[0]?.id||null;
+      }catch(e){console.error(e);}
       delete window[cbName];if(sc.parentNode)sc.parentNode.removeChild(sc);
       setSt('ok');render();
     };
     sc.onerror=()=>{delete window[cbName];if(sc.parentNode)sc.parentNode.removeChild(sc);setSt('error');render();};
     sc.src=GS_URL+'?cb='+cbName+'&t='+Date.now();
     document.head.appendChild(sc);
+    // Timeout de seguridad: si no responde en 10s, render igual
+    setTimeout(()=>{if(window[cbName]){delete window[cbName];setSt('error');render();}},10000);
   }
 }
 function setSt(s){
@@ -250,9 +262,21 @@ function oSettings(){
 function saveGS(){
   const url=document.getElementById('fgsurl').value.trim();
   GS_URL=url;localStorage.setItem('gs_url',url);cm();
-  if(url)load(); else render();
+  const b=document.getElementById('gsBtn');
+  if(b){b.textContent=(GS_URL?'🟢 Sheets':'⚙️ Sheets');b.style.color=GS_URL?'var(--neo)':'var(--red)';}
+  if(url)// Si no hay URL configurada, abrir configuración automáticamente
+if(!IS_AS && !GS_URL){
+  setTimeout(()=>oSettings(), 800);
+} else {
+  load();
+} else render();
 }
-function clearGS(){GS_URL='';localStorage.removeItem('gs_url');cm();}
+function clearGS(){
+  GS_URL='';localStorage.removeItem('gs_url');
+  const b=document.getElementById('gsBtn');
+  if(b){b.textContent='⚙️ Sheets';b.style.color='var(--red)';}
+  cm();
+}
 
 // ============ RENDER ============
 function render(){rSel();rTabs();rContent();}
@@ -473,15 +497,6 @@ function tEvals(r){
 function oEval(rid,tipo){
   let ex='';
   if(tipo==='minicex'){
-    ex=`<div class="sd">Dominios Mini-CEX (1 inferior · 5 satisfactorio · 9 superior)</div>
-    ${MCEX.map((d,i)=>`<div style="margin-bottom:10px"><div style="font-size:.78rem;font-weight:600;margin-bottom:5px">${d}</div>
-    <div style="display:flex;gap:3px">${[1,2,3,4,5,6,7,8,9].map(n=>`<button type="button" style="flex:1;padding:5px 2px;border:1px solid var(--brd);border-radius:4px;background:var(--bg);cursor:pointer;font-size:.75rem;font-weight:600;text-align:center" id="mc${i}_${n}" onclick="srat('mc${i}',${n},9)">${n}</button>`).join('')}</div></div>`).join('')}`;
-  }
-  if(tipo==='trescientos'){
-    ex=`<div class="sd">Dimensiones 360° (1–10)</div>
-    ${T360.map((d,i)=>`<div style="margin-bottom:10px"><div style="font-size:.78rem;font-weight:600;margin-bottom:5px">${d}</div>
-    <div style="display:flex;gap:3px">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<button type="button" style="flex:1;padding:5px 2px;border:1px solid var(--brd);border-radius:4px;background:var(--bg);cursor:pointer;font-size:.75rem;font-weight:600;text-align:center" id="t3${i}_${n}" onclick="srat('t3${i}',${n},10)">${n}</button>`).join('')}</div></div>`).join('')}`;
-  }
   om(`Nueva evaluación: ${TLBL[tipo]}`,`
     <div class="fr"><div class="fg"><label>Fecha</label><input type="date" id="ff2" value="${hoy()}"></div>
     <div class="fg"><label>Docente evaluador/a</label><input id="fdocente" placeholder="Nombre del docente"></div></div>
@@ -616,32 +631,89 @@ function svProc(rid){
 // ============ GUARDIAS ============
 function tGuards(r){
   const el=document.getElementById('content');
-  const gu=S.guardias.filter(g=>g.rid===r.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
-  const now=new Date(),mes=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  const gm=gu.filter(g=>g.fecha.startsWith(mes)).length,maxM=parseInt(r.anio)>=5?5:6;
+  const gu=S.guardias.filter(g=>g.rid===r.id);
+  const now=new Date();
+  if(!window._gcal)window._gcal={y:now.getFullYear(),m:now.getMonth()};
+  const {y,m}=window._gcal;
+  const firstDay=new Date(y,m,1).getDay();
+  const daysInMonth=new Date(y,m+1,0).getDate();
+  const monthLabel=new Date(y,m,1).toLocaleString('es-AR',{month:'long',year:'numeric'});
+  const mesStr=`${y}-${String(m+1).padStart(2,'0')}`;
+  const guardDays={};
+  gu.forEach(g=>{if(g.fecha&&g.fecha.startsWith(mesStr)){const d=parseInt(g.fecha.split('-')[2]);if(!guardDays[d])guardDays[d]=[];guardDays[d].push(g);}});
+  const gm=Object.values(guardDays).reduce((s,a)=>s+a.length,0);
+  const maxM=parseInt(r.anio)>=5?5:6;
+  const DN=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  let cal=`<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px">`;
+  DN.forEach(d=>cal+=`<div style="text-align:center;font-size:.64rem;font-weight:700;color:var(--muted);padding:4px 0">${d}</div>`);
+  cal+=`</div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">`;
+  for(let i=0;i<firstDay;i++)cal+=`<div></div>`;
+  for(let d=1;d<=daysInMonth;d++){
+    const date=new Date(y,m,d);
+    const isFds=date.getDay()===0||date.getDay()===6;
+    const dateStr=`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const gs=guardDays[d]||[];
+    const hasG=gs.length>0;
+    const isToday=dateStr===hoy();
+    const bg=hasG?(isFds?'#fefcbf':'var(--pri-bg)'):'var(--bg)';
+    const col=hasG?(isFds?'#744210':'var(--pri)'):'var(--txt)';
+    const brd=isToday?`2px solid var(--pri)`:`1px solid ${hasG?(isFds?'#d69e2e':'var(--pri-acc)'):'var(--brd)'}`;
+    cal+=`<div onclick="oGuardiaDay('${r.id}','${dateStr}',${isFds})"
+      style="background:${bg};border:${brd};border-radius:6px;padding:5px 2px;text-align:center;cursor:pointer;min-height:48px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px"
+      onmouseover="this.style.opacity='.7'" onmouseout="this.style.opacity='1'">
+      <span style="font-size:.8rem;font-weight:${isToday?800:400};color:${col}">${d}</span>
+      ${hasG?`<span style="font-size:.58rem;background:${isFds?'#d69e2e':'var(--pri)'};color:#fff;border-radius:10px;padding:1px 5px;font-weight:700">${gs.length>1?gs.length+'×':'✓'}</span>`:isFds?`<span style="font-size:.56rem;color:var(--muted);opacity:.45">FS</span>`:''}
+    </div>`;
+  }
+  cal+=`</div>`;
   el.innerHTML=`<div class="card">
-    <div class="ch"><div><div class="ct">Guardias</div><div class="cs">${gm} este mes · Máx: ${maxM}/mes</div></div>
-    <button class="btn bp bsm" onclick="oGuardia('${r.id}')">＋ Guardia</button></div>
+    <div class="ch"><div><div class="ct">Guardias</div><div class="cs">${gm} registradas este mes · Máx: ${maxM}/mes${gm>maxM?' ⚠️':''}</div></div>
+    <button class="btn bg2 bsm" onclick="oGuardia('${r.id}')">＋ Manual</button></div>
     <div class="g3" style="margin-bottom:14px">
-      <div class="stat"><div class="n">${gm}</div><div class="l">Este mes</div>${gm>maxM?'<div style="font-size:.66rem;color:var(--red);margin-top:3px">⚠ Excede límite</div>':''}</div>
+      <div class="stat"><div class="n">${gm}</div><div class="l">Este mes</div></div>
       <div class="stat"><div class="n">${gu.filter(g=>g.tipo==='fds').length}</div><div class="l">Fin de semana</div></div>
-      <div class="stat"><div class="n">${gu.length}</div><div class="l">Total</div></div>
+      <div class="stat"><div class="n">${gu.length}</div><div class="l">Total histórico</div></div>
     </div>
-    ${!gu.length?`<div class="empty"><div class="ei">🌙</div><p>Sin guardias</p></div>`:`
-    <div class="tw"><table>
-      <thead><tr><th>Fecha</th><th>Tipo</th><th>Servicio</th><th>Supervisor</th><th>Observaciones</th><th></th></tr></thead>
-      <tbody>${gu.map(g=>`<tr>
-        <td>${fd(g.fecha)}</td>
-        <td>${g.tipo==='fds'?'<span class="badge" style="background:#fefcbf;color:#744210">Fin semana</span>':'<span class="badge" style="background:#e2e8f0;color:#718096">Semana</span>'}</td>
-        <td style="font-size:.75rem">${g.serv||'—'}</td><td style="font-size:.75rem">${g.sup||'—'}</td>
-        <td style="font-size:.74rem;color:var(--muted)">${g.obs?g.obs.substring(0,70):'—'}</td>
-        <td><button class="btn bg2 bsm" style="color:var(--red)" onclick="del('guardias','${g.id}')">🗑</button></td>
-      </tr>`).join('')}</tbody>
-    </table></div>`}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <button class="btn bg2" onclick="window._gcal.m--;if(window._gcal.m<0){window._gcal.m=11;window._gcal.y--;}tGuards(aR())">◀ Anterior</button>
+      <span style="font-weight:700;font-size:.9rem;text-transform:capitalize">${monthLabel}</span>
+      <button class="btn bg2" onclick="window._gcal.m++;if(window._gcal.m>11){window._gcal.m=0;window._gcal.y++;}tGuards(aR())">Siguiente ▶</button>
+    </div>
+    <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">
+      Tocá un día para registrar una guardia ·
+      <span style="background:var(--pri-bg);color:var(--pri);padding:1px 7px;border-radius:10px;font-weight:700">Semana</span>
+      <span style="background:#fefcbf;color:#744210;padding:1px 7px;border-radius:10px;font-weight:700;margin-left:4px">Fin de semana</span>
+    </div>
+    ${cal}
   </div>`;
 }
+
+function oGuardiaDay(rid,dateStr,isFds){
+  const existing=S.guardias.filter(g=>g.rid===rid&&g.fecha===dateStr);
+  om(`${fd(dateStr)} · ${isFds?'🟡 Fin de semana':'📅 Día de semana'}`,`
+    ${existing.length?`<div style="margin-bottom:14px">
+      <div style="font-size:.74rem;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Guardias registradas</div>
+      ${existing.map(g=>`<div style="display:flex;align-items:center;gap:8px;background:var(--bg);padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:.82rem">
+        🏥 <strong>${g.serv||'—'}</strong>${g.sup?` · ${g.sup}`:''}
+        <button class="btn br bsm" style="margin-left:auto" onclick="del('guardias','${g.id}');cm();tGuards(aR())">🗑</button>
+      </div>`).join('')}
+    </div><div class="sd">Agregar otra guardia</div>`:''}
+    <div class="fr"><div class="fg"><label>Servicio</label>
+      <select id="fserv"><option>Guardia pediátrica</option><option>Neonatología</option><option>UCIP</option><option>Rotación externa</option></select></div>
+    <div class="fg"><label>Supervisor</label><input id="fsup" placeholder="Nombre"></div></div>
+    <div class="fg"><label>Observaciones</label><textarea id="fobs" placeholder="Casos relevantes…"></textarea></div>`,
+    `<button class="btn bg2" onclick="cm()">Cerrar</button>
+    <button class="btn bp" onclick="svGuardiaFast('${rid}','${dateStr}','${isFds?'fds':'semana'}')">Guardar guardia</button>`);
+}
+function svGuardiaFast(rid,dateStr,tipo){
+  S.guardias.push({id:uid(),rid,fecha:dateStr,tipo,
+    serv:document.getElementById('fserv')?.value||'',
+    sup:document.getElementById('fsup')?.value||'',
+    obs:document.getElementById('fobs')?.value||''});
+  save();cm();tGuards(aR());
+}
 function oGuardia(rid){
-  om('Registrar Guardia',`
+  om('Registrar Guardia (manual)',`
     <div class="fr"><div class="fg"><label>Fecha</label><input type="date" id="ff2" value="${hoy()}"></div>
     <div class="fg"><label>Tipo</label><select id="ftipo"><option value="semana">Día de semana</option><option value="fds">Fin de semana</option></select></div></div>
     <div class="fr"><div class="fg"><label>Servicio</label><select id="fserv"><option>Guardia pediátrica</option><option>Neonatología</option><option>UCIP</option><option>Rotación externa</option></select></div>
@@ -653,7 +725,7 @@ function svGuardia(rid){
   S.guardias.push({id:uid(),rid,fecha:document.getElementById('ff2').value||hoy(),
     tipo:document.getElementById('ftipo').value,serv:document.getElementById('fserv').value,
     sup:document.getElementById('fsup').value,obs:document.getElementById('fobs').value});
-  save();cm();render();
+  save();cm();tGuards(aR());
 }
 
 // ============ PORTAFOLIO ============
